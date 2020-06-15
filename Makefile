@@ -3,7 +3,7 @@ OBJS = Main.o
 
 CC = g++
 CFLAGS = -W -Wall -O2 -std=c++17
-LDFLAGS = -lvulkan #-lX11
+LDFLAGS = -lvulkan -lxcb
 .SUFFIXES: .cpp .o
 
 .PHONY: all
