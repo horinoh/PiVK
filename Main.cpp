@@ -172,42 +172,74 @@ int main()
 	}
 
 	//!< Device
-#if 0
+	uint32_t GraphicsQueueFamilyIndex = 0xffff;
+	uint32_t PresentQueueFamilyIndex = 0xffff;
 	VkDevice Device;
+	VkQueue GraphicsQueue;
+	//VkQueue PresentQueue;
 	{
 		const auto& PD = PhysicalDevices[0];
+
 		std::vector<VkQueueFamilyProperties> QFPs;
 		uint32_t Count = 0;
 		vkGetPhysicalDeviceQueueFamilyProperties(PD, &Count, nullptr);
 		QFPs.resize(Count);
 		vkGetPhysicalDeviceQueueFamilyProperties(PD, &Count, QFPs.data());
 		for (size_t i = 0; i < QFPs.size();++i) {
-			if (VK_QUEUE_GRAPHICS_BIT & QFPs[i].queueFlags) { std::cout << "GRAPHICS | "; }
-			if (VK_QUEUE_COMPUTE_BIT & QFPs[i].queueFlags) { std::cout << "COMPUTE | "; }
-			if (VK_QUEUE_TRANSFER_BIT & QFPs[i].queueFlags) { std::cout << "TRANSFER | "; }
-			std::cout << std::endl;
-
+			if (VK_QUEUE_GRAPHICS_BIT & QFPs[i].queueFlags) { 
+				GraphicsQueueFamilyIndex = i;
+			}
 			VkBool32 b = VK_FALSE;
 			VERIFY_SUCCEEDED(vkGetPhysicalDeviceSurfaceSupportKHR(PD, i, Surface, &b));
-			if (b) { std::cout << "SurfaceSupported" << std::endl; }
+			if (b) {
+				PresentQueueFamilyIndex = i;
+			}
+		}
+		std::cout << "GraphicsQueueFamilyIndex = " << GraphicsQueueFamilyIndex << std::endl;
+		std::cout << "PresentQueueFamilyIndex = " << PresentQueueFamilyIndex << std::endl;
+		assert(0xffff != GraphicsQueueFamilyIndex && "");
+		//assert(0xffff != PresentQueueFamilyIndex && "");
+
+		std::vector<std::vector<float>> Priorites;
+		Priorites.resize(QFPs.size());
+		const uint32_t GraphicsQueueIndexInFamily = static_cast<uint32_t>(Priorites[GraphicsQueueFamilyIndex].size()); Priorites[GraphicsQueueFamilyIndex].push_back(0.5f);
+		//const uint32_t PresentQueueIndexInFamily = static_cast<uint32_t>(Priorites[PresentQueueFamilyIndex].size()); Priorites[PresentQueueFamilyIndex].push_back(0.5f);
+		std::cout << "\tGraphicsQueueIndexInFamily = " << GraphicsQueueIndexInFamily << std::endl;
+		//std::cout << "\tPresentQueueIndexInFamily = " << PresentQueueIndexInFamily << std::endl;
+
+		std::vector<VkDeviceQueueCreateInfo> DQCIs;
+		DQCIs.reserve(Priorites.size());
+		for (size_t i = 0; i < Priorites.size(); ++i) {
+			if (!Priorites[i].empty()) {
+				DQCIs.push_back(
+					{
+						VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+						nullptr,
+						0,
+						static_cast<uint32_t>(i),
+						static_cast<uint32_t>(Priorites[i].size()), Priorites[i].data()
+					}
+				);
+			}
 		}
 
-		std::vector<VkDeviceQueueCreateInfo> QueueCreateInfos = {}; //TODO
-		const std::array<const char*, 2> DeviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_VALIDATION_CACHE_EXTENSION_NAME, };
+		const std::array<const char*, 1> Extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 		VkPhysicalDeviceFeatures PDF;
 		vkGetPhysicalDeviceFeatures(PD, &PDF);
 		const VkDeviceCreateInfo DCI = {
 			VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 			nullptr,
 			0,
-			static_cast<uint32_t>(QueueCreateInfos.size()), QueueCreateInfos.data(),
+			static_cast<uint32_t>(DQCIs.size()), DQCIs.data(),
 			0, nullptr,
-			static_cast<uint32_t>(DeviceExtensions.size()), DeviceExtensions.data(),
+			static_cast<uint32_t>(Extensions.size()), Extensions.data(),
 			&PDF
 		};
 		VERIFY_SUCCEEDED(vkCreateDevice(PD, &DCI, GetAllocationCallbacks(), &Device));
+
+		vkGetDeviceQueue(Device, GraphicsQueueFamilyIndex, GraphicsQueueIndexInFamily, &GraphicsQueue);
+		//vkGetDeviceQueue(Device, PresentQueueFamilyIndex, PresentQueueIndexInFamily, &PresentQueue);
 	}
-#endif
 
 	//!< Loop
 	{
@@ -223,7 +255,7 @@ int main()
 
 	//!< Destruct
 	{
-		//vkDestroyDevice(Device, GetAllocationCallbacks());
+		vkDestroyDevice(Device, GetAllocationCallbacks());
 		vkDestroySurfaceKHR(Instance, Surface, GetAllocationCallbacks());
 #if 0
 		vkDestroyDebugReportCallback(Instance, DebugReportCallback, GetAllocationCallbacks());
