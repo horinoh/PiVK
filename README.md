@@ -67,7 +67,7 @@
     ~~~
 - アセットを必要とするサンプルを動かす場合
     ~~~
-    $pyhton3 download_assets.py
+    $python3 download_assets.py
     $bin/scenerendering
     ~~~
 ## コーディング
@@ -75,3 +75,13 @@
     ~~~
     g++ main.cpp -lvulkan
     ~~~
+- スワップチェインの作成時に、以下のようなエラーが出るが、サンプルても出ているのでとりあえず放置
+    ~~~
+    vk: error: v3dv_AllocateMemory: ignored VkStructureType 1000127001:VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+    vk: error: v3dv_AllocateMemory: ignored VkStructureType 1000072002:VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
+    ~~~
+
+### glmをサブモジュールとして追加する場合
+~~~
+$git submodule add https://github.com/g-truc/glm.git glm
+~~~

@@ -9,6 +9,8 @@
 #define VK_USE_PLATFORM_XCB_KHR
 #include <vulkan/vulkan.h>
 
+#include <glm/glm.hpp>
+
 #define VERIFY_SUCCEEDED(VR) if(VK_SUCCESS != VR) { std::cerr << "VkResult = " << VR << std::endl; assert(false); } 
 
 const VkAllocationCallbacks* GetAllocationCallbacks() { return nullptr; }
@@ -241,6 +243,165 @@ int main()
 		//vkGetDeviceQueue(Device, PresentQueueFamilyIndex, PresentQueueIndexInFamily, &PresentQueue);
 	}
 
+	//!< Fence
+	VkFence Fence;
+	{
+		const VkFenceCreateInfo FCI = {
+			VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			nullptr,
+			VK_FENCE_CREATE_SIGNALED_BIT
+		};
+		VERIFY_SUCCEEDED(vkCreateFence(Device, &FCI, GetAllocationCallbacks(), &Fence));
+	}
+
+	//!< Semaphore
+	VkSemaphore NextImageAcquiredSemaphore;
+	VkSemaphore RenderFinishedSemaphore;
+	{
+		const VkSemaphoreCreateInfo SCI = {
+			VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			nullptr,
+			0
+		};
+		VERIFY_SUCCEEDED(vkCreateSemaphore(Device, &SCI, GetAllocationCallbacks(), &NextImageAcquiredSemaphore));
+		VERIFY_SUCCEEDED(vkCreateSemaphore(Device, &SCI, GetAllocationCallbacks(), &RenderFinishedSemaphore));
+	}
+
+	//!< Swapchain
+	VkSwapchainKHR Swapchain;
+	std::vector<VkImage> SwapchainImages;
+	std::vector<VkImageView> SwapchainImageViews;
+	{
+		//const auto& PD = PhysicalDevices[0];
+		uint32_t Count = 0;
+#if 0
+		VkSurfaceCapabilitiesKHR SC;
+		VERIFY_SUCCEEDED(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(PD, Surface, &SC));
+		const auto ImageCount = (std::min)(SC.minImageCount + 1, 0 == SC.maxImageCount ? 0xffff : SC.maxImageCount);
+		std::cout << SC.currentTransform << std::endl;
+#endif
+#if 0
+		VERIFY_SUCCEEDED(vkGetPhysicalDeviceSurfaceFormatsKHR(PD, Surface, &Count, nullptr));
+		std::vector<VkSurfaceFormatKHR> SFs(Count);
+		VERIFY_SUCCEEDED(vkGetPhysicalDeviceSurfaceFormatsKHR(PD, Surface, &Count, SFs.data()));
+		for (auto& i : SFs) { std::cout << i.format << ", " << i.colorSpace << std::endl; }
+		//!< 要素が 1 つのみで UNDEFINED の場合、制限は無く好きなものを選択できる
+		if (1 == SFs.size() && VK_FORMAT_UNDEFINED == SFs[0].format) { std::cout << "Any format" << std::endl; }
+#endif
+#if 0
+		VERIFY_SUCCEEDED(vkGetPhysicalDeviceSurfacePresentModesKHR(PD, Surface, &Count, nullptr));
+		std::vector<VkPresentModeKHR> PMs(Count);
+		VERIFY_SUCCEEDED(vkGetPhysicalDeviceSurfacePresentModesKHR(PD, Surface, &Count, PMs.data()));
+#endif
+		const VkSwapchainCreateInfoKHR SCI = {
+			VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+			nullptr,
+			0,
+			Surface,
+			2/*3*/,
+			VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+			{ 1280, 720 },
+			1,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			VK_SHARING_MODE_EXCLUSIVE, 0, nullptr,
+			VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+			VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			VK_PRESENT_MODE_FIFO_KHR/*VK_PRESENT_MODE_MAILBOX_KHR*/,
+			VK_TRUE,
+			VK_NULL_HANDLE
+		};
+		//!< エラーが出力されている
+		VERIFY_SUCCEEDED(vkCreateSwapchainKHR(Device, &SCI, GetAllocationCallbacks(), &Swapchain));
+
+		//!< Swapchain image
+		VERIFY_SUCCEEDED(vkGetSwapchainImagesKHR(Device, Swapchain, &Count, nullptr));
+		SwapchainImages.resize(Count);
+		VERIFY_SUCCEEDED(vkGetSwapchainImagesKHR(Device, Swapchain, &Count, SwapchainImages.data()));
+
+		//!< Swapchain image view
+		SwapchainImageViews.resize(SwapchainImages.size());
+		for (size_t i = 0; i < SwapchainImageViews.size();++i) {
+			const VkImageViewCreateInfo IVCI = {	
+				VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				nullptr,
+				0,
+				SwapchainImages[i],
+				VK_IMAGE_VIEW_TYPE_2D,
+				SCI.imageFormat,
+				{ VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, },
+				{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
+			};
+			VERIFY_SUCCEEDED(vkCreateImageView(Device, &IVCI, GetAllocationCallbacks(), &SwapchainImageViews[i]));
+		}
+	}
+	
+	//!< Command
+	VkCommandPool CommandPool;
+	std::vector<VkCommandBuffer> CommandBuffers;
+	{
+		const VkCommandPoolCreateInfo CPCI = {
+			VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			nullptr,
+			VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			GraphicsQueueFamilyIndex
+		};
+		VERIFY_SUCCEEDED(vkCreateCommandPool(Device, &CPCI, GetAllocationCallbacks(), &CommandPool));
+
+		CommandBuffers.resize(SwapchainImages.size());
+		const VkCommandBufferAllocateInfo CBAI = {
+			VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			nullptr,
+			CommandPool,
+			VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			static_cast<uint32_t>(CommandBuffers.size())
+		};
+		VERIFY_SUCCEEDED(vkAllocateCommandBuffers(Device, &CBAI, CommandBuffers.data()));
+	}
+
+	//!< Vertex buffer
+	VkBuffer VertexBuffer;
+	{
+		using Vertex_PositionColor = struct Vertex_PositionColor { glm::vec3 Position; glm::vec4 Color; };
+		const std::array<Vertex_PositionColor, 3> Vertices = { {
+			{ { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } }, //!< CT
+			{ { -0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } }, //!< LB
+			{ { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }, //!< RB
+		} };
+		const auto Stride = sizeof(Vertices[0]);
+		const auto Size = static_cast<VkDeviceSize>(Stride * Vertices.size());
+
+		const VkBufferCreateInfo BCI = {
+			VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			nullptr,
+			0,
+			Size,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_SHARING_MODE_EXCLUSIVE,
+			0, nullptr
+		};
+		VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), &VertexBuffer));
+	}
+	//!< Index buffer
+	VkBuffer IndexBuffer;
+	uint32_t IndexCount;
+	{
+		const std::array<uint32_t, 3> Indices = { 0, 1, 2 };
+		IndexCount = static_cast<uint32_t>(Indices.size());
+		const auto Stride = sizeof(Indices[0]);
+		const auto Size = static_cast<VkDeviceSize>(Stride * IndexCount);
+		
+		const VkBufferCreateInfo BCI = {
+			VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			nullptr,
+			0,
+			Size,
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_SHARING_MODE_EXCLUSIVE,
+			0, nullptr
+		};
+		VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), &IndexBuffer));
+	}
+
 	//!< Loop
 	{
 		auto LoopEnd = false;
@@ -255,6 +416,14 @@ int main()
 
 	//!< Destruct
 	{
+		vkDestroyBuffer(Device, IndexBuffer, GetAllocationCallbacks());
+		vkDestroyBuffer(Device, VertexBuffer, GetAllocationCallbacks());
+		vkFreeCommandBuffers(Device, CommandPool, static_cast<uint32_t>(CommandBuffers.size()), CommandBuffers.data());
+		vkDestroyCommandPool(Device, CommandPool, GetAllocationCallbacks());
+		vkDestroySwapchainKHR(Device, Swapchain, GetAllocationCallbacks());
+		vkDestroySemaphore(Device, NextImageAcquiredSemaphore, GetAllocationCallbacks());
+		vkDestroySemaphore(Device, RenderFinishedSemaphore, GetAllocationCallbacks());
+		vkDestroyFence(Device, Fence, GetAllocationCallbacks());
 		vkDestroyDevice(Device, GetAllocationCallbacks());
 		vkDestroySurfaceKHR(Instance, Surface, GetAllocationCallbacks());
 #if 0
