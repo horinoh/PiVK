@@ -81,6 +81,13 @@
     vk: error: v3dv_AllocateMemory: ignored VkStructureType 1000072002:VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
     ~~~
 
+<!--
+### glslang
+~~~
+$sudo apt-get install glslang-dev
+~~~
+-->
+
 ### glmをサブモジュールとして追加する場合
 ~~~
 $git submodule add https://github.com/g-truc/glm.git glm

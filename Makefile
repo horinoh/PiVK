@@ -2,7 +2,7 @@ TARGET = VK
 OBJS = Main.o
 
 CC = g++
-CFLAGS = -W -Wall -O2 -std=c++17 -I./glm
+CFLAGS = -W -Wall -Wno-psabi -O2 -std=c++17 -I./glm
 LDFLAGS = -lvulkan -lxcb
 .SUFFIXES: .cpp .o
 
