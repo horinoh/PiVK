@@ -80,13 +80,11 @@
     vk: error: v3dv_AllocateMemory: ignored VkStructureType 1000127001:VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
     vk: error: v3dv_AllocateMemory: ignored VkStructureType 1000072002:VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
     ~~~
-
-<!--
+    
 ### glslang
 ~~~
-$sudo apt-get install glslang-dev
+$sudo apt-get install glslang-tools
 ~~~
--->
 
 ### glmをサブモジュールとして追加する場合
 ~~~

@@ -625,7 +625,7 @@ int main()
 	VkShaderModule FragmentShaderModule;
 	{
 		{
-			std::ifstream In("", std::ios::in | std::ios::binary);
+			std::ifstream In("VS.spv", std::ios::in | std::ios::binary);
 			if (!In.fail()) {
 				In.seekg(0, std::ios_base::end);
 				const auto Size = In.tellg();
@@ -646,7 +646,7 @@ int main()
 			}
 		}
 		{
-			std::ifstream In("", std::ios::in | std::ios::binary);
+			std::ifstream In("FS.spv", std::ios::in | std::ios::binary);
 			if (!In.fail()) {
 				In.seekg(0, std::ios_base::end);
 				const auto Size = In.tellg();
