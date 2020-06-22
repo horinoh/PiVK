@@ -3,7 +3,7 @@
 #include <vector>
 #include <array>
 #include <fstream>
-//#include <numeric>
+#include <numeric>
 
 #include <xcb/xcb.h>
 
@@ -24,6 +24,93 @@ static size_t RoundDown(const size_t Size, const size_t Align) {
 static size_t RoundUp(const size_t Size, const size_t Align) {
 	if (IsAligned(Size, Align)) { return Size; }
 	return RoundDown(Size, Align) + Align;
+}
+
+static void CreateBuffer(VkBuffer* Buffer, const VkDevice Device, const VkBufferUsageFlags BUF, const VkDeviceSize Size)
+{
+	const VkBufferCreateInfo BCI = {
+		VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		nullptr,
+		0,
+		Size,
+		BUF,
+		VK_SHARING_MODE_EXCLUSIVE,
+		0, nullptr
+	};
+	VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), Buffer));
+}
+
+static uint32_t GetMemoryTypeIndex(const VkPhysicalDevice PD, const VkMemoryRequirements& MR, const VkMemoryPropertyFlagBits MPFB) {
+	VkPhysicalDeviceMemoryProperties PDMP;
+	vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
+	for (uint32_t i = 0; i < PDMP.memoryTypeCount; ++i) {
+		if (MR.memoryTypeBits & (1 << i)) {
+			if (PDMP.memoryTypes[i].propertyFlags & MPFB) {
+				return i;
+			}
+		}
+	}
+	return static_cast<uint32_t>(0xffff);
+};
+
+static void CreateDeviceMemory(std::vector<VkDeviceMemory>& DMs, std::vector<std::vector<VkMemoryRequirements>>& MRs, const VkPhysicalDevice PD, const VkDevice Device, const VkMemoryPropertyFlagBits MPFB, const std::vector<VkBuffer>& Buffers)
+{
+	VkPhysicalDeviceMemoryProperties PDMP;
+	vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
+	DMs.assign(PDMP.memoryTypeCount, VK_NULL_HANDLE);
+
+	MRs.resize(PDMP.memoryTypeCount);
+	for (auto i : Buffers) {
+		VkMemoryRequirements MR;
+		vkGetBufferMemoryRequirements(Device, i, &MR);
+		MRs[GetMemoryTypeIndex(PD, MR, MPFB)].push_back(MR);
+	}
+	for (size_t i = 0; i < MRs.size(); ++i) {
+		if (!MRs[i].empty()) {
+			std::cout << "[" << i << "] ";
+			const auto HeapIndex = PDMP.memoryTypes[i].heapIndex;
+			std::cout << "MemoryTypeIndex = " << i << ", HeapIndex = " << HeapIndex << std::endl;
+			const auto HeapSize = PDMP.memoryHeaps[HeapIndex].size;
+			std::cout << "\tAllocationSize = ";
+			VkDeviceSize AllocationSize = 0;
+			for (const auto j : MRs[i]) {
+				std::cout << j.size << "(" << j.alignment << ") + ";
+				AllocationSize += RoundUp(j.size, j.alignment);
+			}
+			std::cout << " = " << AllocationSize << " / " << HeapSize << std::endl;
+			assert(AllocationSize < HeapSize && "");
+			const VkMemoryAllocateInfo MAI = {
+				VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+				nullptr,
+				AllocationSize,
+				i
+			};
+			VERIFY_SUCCEEDED(vkAllocateMemory(Device, &MAI, GetAllocationCallbacks(), &DMs[i]));
+		}
+	}
+}
+
+static void CreateShaderModule(VkShaderModule* ShaderModule, const VkDevice Device, const std::string& Path)
+{
+	std::ifstream In(Path.c_str(), std::ios::in | std::ios::binary);
+	if (!In.fail()) {
+		In.seekg(0, std::ios_base::end);
+		const auto Size = In.tellg();
+		In.seekg(0, std::ios_base::beg);
+		if (Size) {
+			auto Data = new char[Size];
+			In.read(Data, Size);
+			const VkShaderModuleCreateInfo SMCI = {
+				VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+				nullptr,
+				0,
+				static_cast<size_t>(Size), reinterpret_cast<uint32_t*>(Data)
+			};
+			VERIFY_SUCCEEDED(vkCreateShaderModule(Device, &SMCI, GetAllocationCallbacks(), ShaderModule));
+			delete[] Data;
+		}
+		In.close();
+	}
 }
 
 int main()
@@ -369,19 +456,6 @@ int main()
 		VERIFY_SUCCEEDED(vkAllocateCommandBuffers(Device, &CBAI, CommandBuffers.data()));
 	}
 
-	auto GetMemoryTypeIndex = [](VkPhysicalDevice PD, VkMemoryRequirements MR, VkMemoryPropertyFlagBits MPFB) {
-		VkPhysicalDeviceMemoryProperties PDMP;
-		vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
-		for (uint32_t i = 0; i < PDMP.memoryTypeCount; ++i) {
-			if (MR.memoryTypeBits & (1 << i)) {
-				if (PDMP.memoryTypes[i].propertyFlags & MPFB) {
-					return i;
-				}
-			}
-		}
-		return static_cast<uint32_t>(0xffff);
-	};
-
 	//!< Vertex data
 	using Vertex_PositionColor = struct Vertex_PositionColor { glm::vec3 Position; glm::vec4 Color; };
 	const std::array<Vertex_PositionColor, 3> Vertices = { {
@@ -397,176 +471,95 @@ int main()
 	//!< Indirect data
 	const VkDrawIndexedIndirectCommand DrawIndexedIndirectCommand = { IndexCount, 1, 0, 0, 0 };
 
-	//!< Vertex buffer
-	VkBuffer VertexBuffer;
-	{		
-		const auto Stride = sizeof(Vertices[0]);
-		const auto Size = static_cast<VkDeviceSize>(Stride * Vertices.size());
-		const VkBufferCreateInfo BCI = {
-			VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			nullptr,
-			0,
-			Size,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			VK_SHARING_MODE_EXCLUSIVE,
-			0, nullptr
-		};
-		VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), &VertexBuffer));
-	}
-	//!< Index buffer
-	VkBuffer IndexBuffer;
+	//!< Buffers
+	std::vector<VkBuffer> Buffers;
 	{
-		const auto Stride = sizeof(Indices[0]);
-		const auto Size = static_cast<VkDeviceSize>(Stride * IndexCount);
-		
-		const VkBufferCreateInfo BCI = {
-			VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			nullptr,
-			0,
-			Size,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			VK_SHARING_MODE_EXCLUSIVE,
-			0, nullptr
-		};
-		VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), &IndexBuffer))
+		Buffers.resize(3);
+		{
+			const auto Stride = sizeof(Vertices[0]);
+			const auto Size = static_cast<VkDeviceSize>(Stride * Vertices.size());
+			CreateBuffer(&Buffers[0], Device, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, Size);
+		}
+		{
+			const auto Stride = sizeof(Indices[0]);
+			const auto Size = static_cast<VkDeviceSize>(Stride * IndexCount);
+			CreateBuffer(&Buffers[1], Device, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, Size);
+		}
+		{
+			const auto Stride = sizeof(DrawIndexedIndirectCommand);
+			const auto Size = static_cast<VkDeviceSize>(Stride * 1);
+			CreateBuffer(&Buffers[2], Device, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, Size);
+		}
 	}
-
-	//!< Indirect buffer
-	VkBuffer IndirectBuffer;
-	{
-		const auto Stride = sizeof(DrawIndexedIndirectCommand);
-		const auto Size = static_cast<VkDeviceSize>(Stride * 1);
-		const VkBufferCreateInfo BCI = {
-			VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			nullptr,
-			0,
-			Size,
-			VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-			VK_SHARING_MODE_EXCLUSIVE,
-			0, nullptr
-		};
-		VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), &IndirectBuffer));
-	}
-
 	//!< Device memory
-	std::vector<VkDeviceMemory> DeviceMemories; //< 「メモリタイプ」毎
-	std::vector<std::vector<VkMemoryRequirements>> MemoryRequirements; //< 「メモリタイプ」毎
-	{
-		const auto& PD = PhysicalDevices[0];
-
-		VkPhysicalDeviceMemoryProperties PDMP;
-		vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
-		//!<「メモリタイプ」毎のデバイスメモリを確保
-		DeviceMemories.assign(PDMP.memoryTypeCount, VK_NULL_HANDLE);
-
-		const std::array<VkBuffer, 3> Buffers = { VertexBuffer, IndexBuffer, IndirectBuffer };
-		//!<「メモリタイプ」毎の「MemoryRequirements」を追加していく
-		MemoryRequirements.resize(PDMP.memoryTypeCount);
-		for (auto i : Buffers) {
-			VkMemoryRequirements MR;
-			vkGetBufferMemoryRequirements(Device, i, &MR);
-			const auto MemoryTypeIndex = GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-			MemoryRequirements[MemoryTypeIndex].push_back(MR);
-		}
-		for (size_t i = 0; i < MemoryRequirements.size(); ++i) {
-			if (!MemoryRequirements[i].empty()) {
-				std::cout << "[" << i << "] ";
-				const auto HeapIndex = PDMP.memoryTypes[i].heapIndex;
-				std::cout << "MemoryTypeIndex = " << i << ", HeapIndex = " << HeapIndex << std::endl;
-
-				const auto HeapSize = PDMP.memoryHeaps[HeapIndex].size;
-				std::cout << "\tAllocationSize = ";
-				VkDeviceSize AllocationSize = 0;
-				for (const auto j : MemoryRequirements[i]) {
-					std::cout << j.size << "(" << j.alignment << ") + ";
-					AllocationSize += RoundUp(j.size, j.alignment);
-				}
-				std::cout << " = " << AllocationSize << " / " << HeapSize << std::endl;
-				assert(AllocationSize < HeapSize && "");
-				const VkMemoryAllocateInfo MAI = {
-					VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-					nullptr,
-					AllocationSize,
-					i
-				};
-				VERIFY_SUCCEEDED(vkAllocateMemory(Device, &MAI, GetAllocationCallbacks(), &DeviceMemories[i]));
-			}
-		}
-	}
-
+	std::vector<VkDeviceMemory> DeviceMemories;
+	std::vector<std::vector<VkMemoryRequirements>> MemoryRequirements;
+	CreateDeviceMemory(DeviceMemories, MemoryRequirements, PhysicalDevices[0], Device, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, Buffers);
+	
 	//!< TODO
 	//!< Staging copy (create host visible memory, map and write to host visible memory, submit copy command to device local memory
-#if 0
-	VkDeviceMemory VertexDeviceMemory;
-	{
-		VkBuffer HostVisibleBuffer;
-		const VkBufferCreateInfo BCI = {
-			VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-			nullptr,
-			0,
-			Size,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-			VK_SHARING_MODE_EXCLUSIVE,
-			0, nullptr
-		};
-		VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), &HostVisibleBuffer));
-
-		const auto& PD = PhysicalDevices[0];
-		VkMemoryRequirements MR;
-		vkGetBufferMemoryRequirements(Device, VertexBuffer, &MR);
-		const VkMemoryAllocateInfo MAI = {
-			VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-			nullptr,
-			MR.size,
-			GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-		};
-		VERIFY_SUCCEEDED(vkAllocateMemory(Device, &MAI, GetAllocationCallbacks(), &VertexDeviceMemory));
-
-		const auto& DM = VertexDeviceMemory;
-		void* Data;
-		VERIFY_SUCCEEDED(vkMapMemory(Device, DM, 0, Size, static_cast<VkMemoryMapFlags>(0), &Data)); {
-			memcpy(Data, Source, Size);
-			const std::array<VkMappedMemoryRange, 1> MMRs = {
-				{
-					VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
-					nullptr,
-					DM,
-					0,
-					VK_WHOLE_SIZE
-				}
-			};
-			VERIFY_SUCCEEDED(vkFlushMappedMemoryRanges(Device, static_cast<uint32_t>(MMRs.size()), MMRs.data()));
-			} vkUnmapMemory(Device, DM);
-
-			vkDestroyBuffer(Device, HostVisibleBuffer, GetAllocationCallbacks());
+	if(0){
+		std::vector<VkBuffer> HostVisibleBuffers;
+		{
+			HostVisibleBuffers.resize(3);
+			{
+				const auto Stride = sizeof(Vertices[0]);
+				const auto Size = static_cast<VkDeviceSize>(Stride * Vertices.size());
+				CreateBuffer(&HostVisibleBuffers[0], Device, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, Size);
+			}
+			{
+				const auto Stride = sizeof(Indices[0]);
+				const auto Size = static_cast<VkDeviceSize>(Stride * IndexCount);
+				CreateBuffer(&HostVisibleBuffers[1], Device, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, Size);
+			}
+			{
+				const auto Stride = sizeof(DrawIndexedIndirectCommand);
+				const auto Size = static_cast<VkDeviceSize>(Stride * 1);
+				CreateBuffer(&HostVisibleBuffers[2], Device, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, Size);
+			}
 		}
-#endif
+		std::vector<VkDeviceMemory> HostVisibleDeviceMemories;
+		std::vector<std::vector<VkMemoryRequirements>> HostVisibleMemoryRequirements;
+		{
+			CreateDeviceMemory(HostVisibleDeviceMemories, HostVisibleMemoryRequirements, PhysicalDevices[0], Device, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, HostVisibleBuffers);
+		}
+		
+		//void* Data;
+		//VERIFY_SUCCEEDED(vkMapMemory(Device, DM, 0, Size, static_cast<VkMemoryMapFlags>(0), &Data)); {
+		//	memcpy(Data, Source, Size);
+		//	const std::array<VkMappedMemoryRange, 1> MMRs = {
+		//		{
+		//			VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+		//			nullptr,
+		//			DM,
+		//			0,
+		//			VK_WHOLE_SIZE
+		//		}
+		//	};
+		//	VERIFY_SUCCEEDED(vkFlushMappedMemoryRanges(Device, static_cast<uint32_t>(MMRs.size()), MMRs.data()));
+		//} vkUnmapMemory(Device, DM);
+
+		for (auto i : HostVisibleDeviceMemories) {
+			if (VK_NULL_HANDLE != i) {
+				vkFreeMemory(Device, i, GetAllocationCallbacks());
+			}
+		}
+		for (auto i : HostVisibleBuffers) {
+			vkDestroyBuffer(Device, i, GetAllocationCallbacks());
+		}
+	}
 
 	//!< Bind buffers
 	{
 		const auto& PD = PhysicalDevices[0];
 		std::vector<uint32_t> IndexInMemoryType; IndexInMemoryType.assign(MemoryRequirements.size(), 0);
 		VkDeviceSize MemoryOffset = 0;
-		{
+		for (auto i : Buffers) {
 			VkMemoryRequirements MR;
-			vkGetBufferMemoryRequirements(Device, VertexBuffer, &MR);
+			vkGetBufferMemoryRequirements(Device, i, &MR);
 			const auto MemoryTypeIndex = GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 			std::cout << "Bind : TypeIndex = " << MemoryTypeIndex << ", Offset = " << MemoryOffset << ", IndexInMemotryType = " << IndexInMemoryType[MemoryTypeIndex] << std::endl;
-			VERIFY_SUCCEEDED(vkBindBufferMemory(Device, VertexBuffer, DeviceMemories[MemoryTypeIndex], MemoryOffset)); MemoryOffset += MemoryRequirements[MemoryTypeIndex][IndexInMemoryType[MemoryTypeIndex]].size; ++IndexInMemoryType[MemoryTypeIndex];
-		}
-		{
-			VkMemoryRequirements MR;
-			vkGetBufferMemoryRequirements(Device, IndexBuffer, &MR);
-			const auto MemoryTypeIndex = GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-			std::cout << "Bind : TypeIndex = " << MemoryTypeIndex << ", Offset = " << MemoryOffset << ", IndexInMemotryType = " << IndexInMemoryType[MemoryTypeIndex] << std::endl;
-			VERIFY_SUCCEEDED(vkBindBufferMemory(Device, IndexBuffer, DeviceMemories[MemoryTypeIndex], MemoryOffset)); MemoryOffset += MemoryRequirements[MemoryTypeIndex][IndexInMemoryType[MemoryTypeIndex]].size; ++IndexInMemoryType[MemoryTypeIndex];
-		}
-		{
-			VkMemoryRequirements MR;
-			vkGetBufferMemoryRequirements(Device, IndirectBuffer, &MR);
-			const auto MemoryTypeIndex = GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-			std::cout << "Bind : TypeIndex = " << MemoryTypeIndex << ", Offset = " << MemoryOffset << ", IndexInMemotryType = " << IndexInMemoryType[MemoryTypeIndex] << std::endl;
-			VERIFY_SUCCEEDED(vkBindBufferMemory(Device, IndirectBuffer, DeviceMemories[MemoryTypeIndex], MemoryOffset)); MemoryOffset += MemoryRequirements[MemoryTypeIndex][IndexInMemoryType[MemoryTypeIndex]].size; ++IndexInMemoryType[MemoryTypeIndex];
+			VERIFY_SUCCEEDED(vkBindBufferMemory(Device, i, DeviceMemories[MemoryTypeIndex], MemoryOffset)); MemoryOffset += MemoryRequirements[MemoryTypeIndex][IndexInMemoryType[MemoryTypeIndex]].size; ++IndexInMemoryType[MemoryTypeIndex];
 		}
 	}
 
@@ -621,51 +614,11 @@ int main()
 	}
 
 	//!< Shader moudles
-	VkShaderModule VertexShaderModule;
-	VkShaderModule FragmentShaderModule;
+	std::vector<VkShaderModule> ShaderModules;
 	{
-		{
-			std::ifstream In("VS.spv", std::ios::in | std::ios::binary);
-			if (!In.fail()) {
-				In.seekg(0, std::ios_base::end);
-				const auto Size = In.tellg();
-				In.seekg(0, std::ios_base::beg);
-				if (Size) {
-					auto Data = new char[Size];
-					In.read(Data, Size);
-					const VkShaderModuleCreateInfo SMCI = {
-						VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-						nullptr,
-						0,
-						static_cast<size_t>(Size), reinterpret_cast<uint32_t*>(Data)
-					};
-					VERIFY_SUCCEEDED(vkCreateShaderModule(Device, &SMCI, GetAllocationCallbacks(), &VertexShaderModule));
-					delete[] Data;
-				}
-				In.close();
-			}
-		}
-		{
-			std::ifstream In("FS.spv", std::ios::in | std::ios::binary);
-			if (!In.fail()) {
-				In.seekg(0, std::ios_base::end);
-				const auto Size = In.tellg();
-				In.seekg(0, std::ios_base::beg);
-				if (Size) {
-					auto Data = new char[Size];
-					In.read(Data, Size);
-					const VkShaderModuleCreateInfo SMCI = {
-						VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-						nullptr,
-						0,
-						static_cast<size_t>(Size), reinterpret_cast<uint32_t*>(Data)
-					};
-					VERIFY_SUCCEEDED(vkCreateShaderModule(Device, &SMCI, GetAllocationCallbacks(), &FragmentShaderModule));
-					delete[] Data;
-				}
-				In.close();
-			}
-		}
+		ShaderModules.resize(2);
+		CreateShaderModule(&ShaderModules[0], Device, "VS.spv");
+		CreateShaderModule(&ShaderModules[1], Device, "FS.spv");
 	}
 
 	//!< Pipeline
@@ -692,8 +645,9 @@ int main()
 
 	//!< Destruct
 	{
-		vkDestroyShaderModule(Device, FragmentShaderModule, GetAllocationCallbacks());
-		vkDestroyShaderModule(Device, VertexShaderModule, GetAllocationCallbacks());
+		for (auto i : ShaderModules) {
+			vkDestroyShaderModule(Device, i, GetAllocationCallbacks());
+		}
 		vkDestroyRenderPass(Device, RenderPass, GetAllocationCallbacks());
 		vkDestroyPipelineLayout(Device, PipelineLayout, GetAllocationCallbacks());
 		for (auto i : DeviceMemories) {
@@ -701,9 +655,9 @@ int main()
 				vkFreeMemory(Device, i, GetAllocationCallbacks());
 			}
 		}
-		vkDestroyBuffer(Device, IndirectBuffer, GetAllocationCallbacks());
-		vkDestroyBuffer(Device, IndexBuffer, GetAllocationCallbacks());
-		vkDestroyBuffer(Device, VertexBuffer, GetAllocationCallbacks());
+		for (auto i : Buffers) {
+			vkDestroyBuffer(Device, i, GetAllocationCallbacks());
+		}
 		vkFreeCommandBuffers(Device, CommandPool, static_cast<uint32_t>(CommandBuffers.size()), CommandBuffers.data());
 		vkDestroyCommandPool(Device, CommandPool, GetAllocationCallbacks());
 		vkDestroySwapchainKHR(Device, Swapchain, GetAllocationCallbacks());
