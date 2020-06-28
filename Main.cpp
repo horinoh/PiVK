@@ -40,12 +40,12 @@ static void CreateBuffer(VkBuffer* Buffer, const VkDevice Device, const VkBuffer
 	VERIFY_SUCCEEDED(vkCreateBuffer(Device, &BCI, GetAllocationCallbacks(), Buffer));
 }
 
-static uint32_t GetMemoryTypeIndex(const VkPhysicalDevice PD, const VkMemoryRequirements& MR, const VkMemoryPropertyFlagBits MPFB) {
+static uint32_t GetMemoryTypeIndex(const VkPhysicalDevice PD, const VkMemoryRequirements& MR, const VkMemoryPropertyFlags MPF) {
 	VkPhysicalDeviceMemoryProperties PDMP;
 	vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
 	for (uint32_t i = 0; i < PDMP.memoryTypeCount; ++i) {
 		if (MR.memoryTypeBits & (1 << i)) {
-			if (PDMP.memoryTypes[i].propertyFlags & MPFB) {
+			if ((PDMP.memoryTypes[i].propertyFlags & MPF) == MPF) {
 				return i;
 			}
 		}
@@ -53,36 +53,15 @@ static uint32_t GetMemoryTypeIndex(const VkPhysicalDevice PD, const VkMemoryRequ
 	return static_cast<uint32_t>(0xffff);
 };
 
-static void CreateDeviceMemory(std::vector<VkDeviceMemory>& DMs, std::vector<std::vector<VkMemoryRequirements>>& MRs, const VkPhysicalDevice PD, const VkDevice Device, const VkMemoryPropertyFlagBits MPFB, const std::vector<VkBuffer>& Buffers)
+static void CreateDeviceMemory(std::vector<VkDeviceMemory>& DMs, const VkDevice Device, const std::vector<std::vector<VkMemoryRequirements>>& MRs)
 {
-	VkPhysicalDeviceMemoryProperties PDMP;
-	vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
-	DMs.assign(PDMP.memoryTypeCount, VK_NULL_HANDLE);
-
-	MRs.resize(PDMP.memoryTypeCount);
-	for (auto i : Buffers) {
-		VkMemoryRequirements MR;
-		vkGetBufferMemoryRequirements(Device, i, &MR);
-		MRs[GetMemoryTypeIndex(PD, MR, MPFB)].push_back(MR);
-	}
-	for (size_t i = 0; i < MRs.size(); ++i) {
+	DMs.assign(MRs.size(), VK_NULL_HANDLE);
+	for (size_t i = 0; i < DMs.size(); ++i) {
 		if (!MRs[i].empty()) {
-			std::cout << "[" << i << "] ";
-			const auto HeapIndex = PDMP.memoryTypes[i].heapIndex;
-			std::cout << "MemoryTypeIndex = " << i << ", HeapIndex = " << HeapIndex << std::endl;
-			const auto HeapSize = PDMP.memoryHeaps[HeapIndex].size;
-			std::cout << "\tAllocationSize = ";
-			VkDeviceSize AllocationSize = 0;
-			for (const auto j : MRs[i]) {
-				std::cout << j.size << "(" << j.alignment << ") + ";
-				AllocationSize += RoundUp(j.size, j.alignment);
-			}
-			std::cout << " = " << AllocationSize << " / " << HeapSize << std::endl;
-			assert(AllocationSize < HeapSize && "");
 			const VkMemoryAllocateInfo MAI = {
 				VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 				nullptr,
-				AllocationSize,
+				std::accumulate(MRs[i].cbegin(), MRs[i].cend(), static_cast<VkDeviceSize>(0), [](const VkDeviceSize lhs, const VkMemoryRequirements& rhs) { return RoundUp(lhs, rhs.alignment) + rhs.size; }),
 				i
 			};
 			VERIFY_SUCCEEDED(vkAllocateMemory(Device, &MAI, GetAllocationCallbacks(), &DMs[i]));
@@ -492,10 +471,21 @@ int main()
 		}
 	}
 	//!< Device memory
-	std::vector<VkDeviceMemory> DeviceMemories;
 	std::vector<std::vector<VkMemoryRequirements>> MemoryRequirements;
-	CreateDeviceMemory(DeviceMemories, MemoryRequirements, PhysicalDevices[0], Device, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, Buffers);
-	
+	std::vector<VkDeviceMemory> DeviceMemories;
+	{
+		const auto& PD = PhysicalDevices[0];
+		VkPhysicalDeviceMemoryProperties PDMP;
+		vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
+		MemoryRequirements.resize(PDMP.memoryTypeCount);
+		for (auto i : Buffers) {
+			VkMemoryRequirements MR;
+			vkGetBufferMemoryRequirements(Device, i, &MR);
+			MemoryRequirements[GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)].push_back(MR);
+		}
+		CreateDeviceMemory(DeviceMemories, Device, MemoryRequirements);
+	}
+
 	//!< TODO
 	//!< Staging copy (create host visible memory, map and write to host visible memory, submit copy command to device local memory
 	if(0){
@@ -521,7 +511,16 @@ int main()
 		std::vector<VkDeviceMemory> HostVisibleDeviceMemories;
 		std::vector<std::vector<VkMemoryRequirements>> HostVisibleMemoryRequirements;
 		{
-			CreateDeviceMemory(HostVisibleDeviceMemories, HostVisibleMemoryRequirements, PhysicalDevices[0], Device, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, HostVisibleBuffers);
+			const auto& PD = PhysicalDevices[0];
+			VkPhysicalDeviceMemoryProperties PDMP;
+			vkGetPhysicalDeviceMemoryProperties(PD, &PDMP);
+			HostVisibleMemoryRequirements.resize(PDMP.memoryTypeCount);
+			for (auto i : Buffers) {
+				VkMemoryRequirements MR;
+				vkGetBufferMemoryRequirements(Device, i, &MR);
+				HostVisibleMemoryRequirements[GetMemoryTypeIndex(PD, MR, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)].push_back(MR);
+			}
+			CreateDeviceMemory(HostVisibleDeviceMemories, Device, HostVisibleMemoryRequirements);
 		}
 		
 		//void* Data;
@@ -591,7 +590,7 @@ int main()
 		};
 		const std::array<VkAttachmentReference, 0> InputARs = {};
 		const std::array<VkAttachmentReference, 1> ColorARs = { { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }, };
-		const std::array<VkAttachmentReference, 1> ResolveARs = { { VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED }, };
+		const std::array<VkAttachmentReference, 0> ResolveARs = {};
 		const std::array<uint32_t, 0> Preserve = {};
 		const std::array<VkSubpassDescription, 1> SDs = {
 			0,
@@ -622,13 +621,194 @@ int main()
 	}
 
 	//!< Pipeline
+	VkPipeline Pipeline;
 	{
+		const std::array<VkPipelineShaderStageCreateInfo, 2> PSSCIs = {
+			VkPipelineShaderStageCreateInfo({ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, ShaderModules[0], "main", nullptr }),
+			VkPipelineShaderStageCreateInfo({ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, ShaderModules[1], "main", nullptr }),
+		};
 
+		const uint32_t Binding = 0;
+		const std::array<VkVertexInputBindingDescription, 1> VIBDs = { {
+			{ Binding, sizeof(Vertex_PositionColor), VK_VERTEX_INPUT_RATE_VERTEX },
+		} };
+		const std::array<VkVertexInputAttributeDescription, 2> VIADs = { {
+			{ 0, Binding, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex_PositionColor, Position) },
+			{ 1, Binding, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex_PositionColor, Color) },
+		} };
+		const VkPipelineVertexInputStateCreateInfo PVISCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			static_cast<uint32_t>(VIBDs.size()), VIBDs.data(),
+			static_cast<uint32_t>(VIADs.size()), VIADs.data()
+		};
+
+		const VkPipelineInputAssemblyStateCreateInfo PIASCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP,
+			VK_FALSE
+		};
+
+		const VkPipelineTessellationStateCreateInfo PTSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			0
+		};
+
+		const VkPipelineViewportStateCreateInfo PVSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			1, nullptr,
+			1, nullptr
+		};
+
+		const VkPipelineRasterizationStateCreateInfo PRSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			VK_FALSE,
+			VK_FALSE,
+			VK_POLYGON_MODE_FILL,
+			VK_CULL_MODE_BACK_BIT,
+			VK_FRONT_FACE_COUNTER_CLOCKWISE,
+			VK_FALSE, 0.0f, 0.0f, 0.0f,
+			1.0f
+		};
+
+		const VkPipelineMultisampleStateCreateInfo PMSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			VK_SAMPLE_COUNT_1_BIT,
+			VK_FALSE, 0.0f,
+			nullptr,
+			VK_FALSE, VK_FALSE
+		};
+
+		const VkPipelineDepthStencilStateCreateInfo PDSSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			VK_FALSE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL,
+			VK_FALSE,
+			VK_FALSE, { VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_NEVER, 0, 0, 0 }, { VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 0, 0, 0 },
+			0.0f, 1.0f
+		};
+
+		const std::array<VkPipelineColorBlendAttachmentState, 1> PCBASs = {
+			{
+				VK_FALSE,
+				VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD,
+				VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD,
+				VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+			},
+		};
+		const VkPipelineColorBlendStateCreateInfo PCBSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			VK_FALSE, VK_LOGIC_OP_COPY,
+			static_cast<uint32_t>(PCBASs.size()), PCBASs.data(),
+			{ 1.0f, 1.0f, 1.0f, 1.0f }
+		};
+
+		const std::array<VkDynamicState, 2> DSs = {
+			VK_DYNAMIC_STATE_VIEWPORT,
+			VK_DYNAMIC_STATE_SCISSOR,
+		};
+		const VkPipelineDynamicStateCreateInfo PDSCI = {
+			VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+			nullptr,
+			0,
+			static_cast<uint32_t>(DSs.size()), DSs.data()
+		};
+
+		const std::array<VkGraphicsPipelineCreateInfo, 1> GPCIs = {
+			{
+				VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+				nullptr,
+				0,
+				static_cast<uint32_t>(PSSCIs.size()), PSSCIs.data(),
+				&PVISCI,
+				&PIASCI,
+				&PTSCI,
+				&PVSCI,
+				&PRSCI,
+				&PMSCI,
+				&PDSSCI,
+				&PCBSCI,
+				&PDSCI,
+				PipelineLayout,
+				RenderPass, 0, 
+				VK_NULL_HANDLE, -1
+			}
+		};
+		VERIFY_SUCCEEDED(vkCreateGraphicsPipelines(Device, VK_NULL_HANDLE, static_cast<uint32_t>(GPCIs.size()), GPCIs.data(), GetAllocationCallbacks(), &Pipeline));
 	}
 
 	//!< Framebuffer
+	std::vector<VkFramebuffer> Framebuffers(SwapchainImageViews.size());
 	{
+		for (size_t i = 0; i < SwapchainImageViews.size(); ++i) {
+			Framebuffers.push_back(VkFramebuffer());
+			const std::array<VkImageView, 1> IVs = { SwapchainImageViews[i] };
+			const VkFramebufferCreateInfo FCI = {
+				VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+				nullptr,
+				0,
+				RenderPass,
+				static_cast<uint32_t>(IVs.size()), IVs.data(),
+				1280, 720,
+				1
+			};
+			VERIFY_SUCCEEDED(vkCreateFramebuffer(Device, &FCI, GetAllocationCallbacks(), &Framebuffers[i]));
+		}
+	}
 
+	//!< Populate command
+	{
+		for (size_t i = 0; i < CommandBuffers.size(); ++i) {
+			const auto CB = CommandBuffers[i];
+			const VkCommandBufferBeginInfo CBBI = {
+				VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+				nullptr,
+				0,
+				nullptr
+			};
+			VERIFY_SUCCEEDED(vkBeginCommandBuffer(CB, &CBBI)); {
+				const std::array<VkClearValue, 1> CVs = { { 0.529411793f, 0.807843208f, 0.921568692f, 1.0f } };
+				const VkRect2D RenderArea = { { 0, 0 }, { 1280, 720 } };
+				const VkRenderPassBeginInfo RPBI = {
+					VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+					nullptr,
+					RenderPass,
+					Framebuffers[i],
+					RenderArea,
+					static_cast<uint32_t>(CVs.size()), CVs.data()
+				};
+				vkCmdBeginRenderPass(CB, &RPBI, VK_SUBPASS_CONTENTS_INLINE); {
+					const std::array< VkViewport, 1> Viewports = { { 0.0f, 720.0f, 1280.0f, -720.0f, 0.0f, 1.0f } };
+					const std::array<VkRect2D, 1> ScissorRects = { {{{ 0, 0 }, { 1280, 720 }}} };
+					vkCmdSetViewport(CB, 0, static_cast<uint32_t>(Viewports.size()), Viewports.data());
+					vkCmdSetScissor(CB, 0, static_cast<uint32_t>(ScissorRects.size()), ScissorRects.data());
+
+					vkCmdBindPipeline(CB, VK_PIPELINE_BIND_POINT_GRAPHICS, Pipeline);
+
+					const std::array<VkBuffer, 1> VBs = { Buffers[0] };
+					const std::array<VkDeviceSize, 1> Offsets = { 0 };
+					vkCmdBindVertexBuffers(CB, 0, static_cast<uint32_t>(VBs.size()), VBs.data(), Offsets.data());
+					const auto IB = Buffers[1];
+					vkCmdBindIndexBuffer(CB, IB, 0, VK_INDEX_TYPE_UINT32);
+					const auto IDB = Buffers[2];
+					vkCmdDrawIndexedIndirect(CB, IDB, 0, 1, 0);
+				} vkCmdEndRenderPass(CB);
+			} VERIFY_SUCCEEDED(vkEndCommandBuffer(CB));
+		}
 	}
 
 	//!< Loop
@@ -645,6 +825,10 @@ int main()
 
 	//!< Destruct
 	{
+		for (auto i : Framebuffers) {
+			vkDestroyFramebuffer(Device, i, GetAllocationCallbacks());
+		}
+		vkDestroyPipeline(Device, Pipeline, GetAllocationCallbacks());
 		for (auto i : ShaderModules) {
 			vkDestroyShaderModule(Device, i, GetAllocationCallbacks());
 		}
