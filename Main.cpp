@@ -4,6 +4,8 @@
 #include <array>
 #include <fstream>
 #include <numeric>
+#include <chrono>
+#include <thread>
 
 #include <xcb/xcb.h>
 
@@ -255,7 +257,7 @@ int main()
 	uint32_t PresentQueueFamilyIndex = 0xffff;
 	VkDevice Device;
 	VkQueue GraphicsQueue;
-	//VkQueue PresentQueue;
+	VkQueue PresentQueue;
 	{
 		const auto& PD = PhysicalDevices[0];
 
@@ -792,7 +794,7 @@ int main()
 					static_cast<uint32_t>(CVs.size()), CVs.data()
 				};
 				vkCmdBeginRenderPass(CB, &RPBI, VK_SUBPASS_CONTENTS_INLINE); {
-					const std::array< VkViewport, 1> Viewports = { { 0.0f, 720.0f, 1280.0f, -720.0f, 0.0f, 1.0f } };
+					const std::array<VkViewport, 1> Viewports = { { 0.0f, 720.0f, 1280.0f, -720.0f, 0.0f, 1.0f } };
 					const std::array<VkRect2D, 1> ScissorRects = { {{{ 0, 0 }, { 1280, 720 }}} };
 					vkCmdSetViewport(CB, 0, static_cast<uint32_t>(Viewports.size()), Viewports.data());
 					vkCmdSetScissor(CB, 0, static_cast<uint32_t>(ScissorRects.size()), ScissorRects.data());
@@ -812,11 +814,57 @@ int main()
 	}
 
 	//!< Loop
+	uint32_t SwapchainImageIndex = 0;
 	{
 		auto LoopEnd = false;
 		xcb_generic_event_t* Event;
 		while (!LoopEnd && (Event = xcb_wait_for_event(Connection))) {
 			switch (Event->response_type & ~0x80) {
+			default:
+			{
+				const std::array<VkFence, 1> Fences = { Fence };
+				VERIFY_SUCCEEDED(vkWaitForFences(Device, static_cast<uint32_t>(Fences.size()), Fences.data(), VK_TRUE, (std::numeric_limits<uint64_t>::max)()));
+				vkResetFences(Device, static_cast<uint32_t>(Fences.size()), Fences.data());
+
+				VERIFY_SUCCEEDED(vkAcquireNextImageKHR(Device, Swapchain, UINT64_MAX, NextImageAcquiredSemaphore, VK_NULL_HANDLE, &SwapchainImageIndex));
+
+				const std::vector<VkSemaphore> WaitSem = { NextImageAcquiredSemaphore };
+				const std::vector<VkPipelineStageFlags> WaitPS = { VK_PIPELINE_STAGE_TRANSFER_BIT };
+				assert(WaitSem.size() == WaitPS.size() && "Must be same size()");
+				//!< 実行するコマンドバッファ
+				const std::vector<VkCommandBuffer> CBs = { CommandBuffers[SwapchainImageIndex], };
+				//!< 描画完了時にシグナルされるセマフォ
+				const std::vector<VkSemaphore> SigSem = { RenderFinishedSemaphore };
+				const std::vector<VkSubmitInfo> SIs = {
+					{
+						VK_STRUCTURE_TYPE_SUBMIT_INFO,
+						nullptr,
+						static_cast<uint32_t>(WaitSem.size()), WaitSem.data(), WaitPS.data(), //!< 次イメージが取得できる(プレゼント完了)までウエイト
+						static_cast<uint32_t>(CBs.size()), CBs.data(),
+						static_cast<uint32_t>(SigSem.size()), SigSem.data() //!< 描画完了を通知する
+					},
+				};
+				VERIFY_SUCCEEDED(vkQueueSubmit(GraphicsQueue, static_cast<uint32_t>(SIs.size()), SIs.data(), Fence));
+
+				//!< Present
+				{
+					const std::vector<VkSwapchainKHR> Swapchains = { Swapchain };
+					const std::vector<uint32_t> ImageIndices = { SwapchainImageIndex };
+					assert(Swapchains.size() == ImageIndices.size() && "Must be same");
+					//!< サブミット時に指定したセマフォ(RenderFinishedSemaphore)を待ってからプレゼントが行なわれる
+					const VkPresentInfoKHR PresentInfo = {
+						VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+						nullptr,
+						1, &RenderFinishedSemaphore,
+						static_cast<uint32_t>(Swapchains.size()), Swapchains.data(), ImageIndices.data(),
+						nullptr
+					};
+					//VERIFY_SUCCEEDED(vkQueuePresentKHR(PresentQueue, &PresentInfo)); #TODO
+					VERIFY_SUCCEEDED(vkQueuePresentKHR(GraphicsQueue, &PresentInfo));
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(16));
+			}
+			break;
 			case XCB_KEY_PRESS: LoopEnd = true; break;
 			}
 			free(Event);

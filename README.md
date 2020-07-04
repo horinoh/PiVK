@@ -39,8 +39,9 @@
     ~~~
 - ビルド、インストール
     ~~~
+    $git clone https://gitlab.freedesktop.org/apinheiro/mesa.git mesa
     $cd mesa
-    $meson --prefix /home/pi/local-install --libdir lib -Dplatforms=x11,drm -Dvulkan-drivers=broadcom -Ddri-drivers= -Dgallium-drivers=v3d,kmsro,vc4 -Dbuildtype=debug _build
+    $meson --prefix /home/pi/local-install --libdir lib -Dplatforms=x11,drm -Dvulkan-drivers=auto -Ddri-drivers= -Dgallium-drivers=v3d,vc4 -Dbuildtype=debug _build
     $ninja -C _build
     $ninja -C _build install
     ~~~
@@ -50,7 +51,6 @@
     VK_ICD_FILENAMES=/home/pi/local-install/share/vulkan/icd.d/broadcom_icd.armv7l.json
     export VK_ICD_FILENAMES
     ~~~
-
 ## サンプルを動かす
 - 追加インストールが必要だったもの
     ~~~
